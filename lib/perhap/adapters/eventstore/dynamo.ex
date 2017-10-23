@@ -2,16 +2,21 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
   use Perhap.Adapters.Eventstore
   use GenServer
 
-  @derive [ExAws.Dynamo.Encodable]
+  @type t :: [ events: events, index: indexes ]
+  @type events  :: %{ required(Perhap.Event.UUIDv1.t) => Perhap.Event.t }
+  @type indexes :: %{ required({atom(), Perhap.Event.UUIDv4.t}) => list(Perhap.Event.UUIDv1.t) }
+
+  #@derive [ExAws.Dynamo.Encodable]
   #defstruct [:event]
 
   #alias __MODULE__
 
-
+  @spec start_link(opts: any()) ::   {:ok, pid} | :ignore | {:error, {:already_started, pid} | term}
   def start_link(args) do
     {:ok, pid} = GenServer.start_link(__MODULE__, args)
   end
 
+  @spec put_event(event: Perhap.Event.t) :: :ok | {:error, term}
   def put_event(event) do
     ExAws.Dynamo.put_item("Events", %{Map.from_struct(event) | metadata: Map.from_struct(event.metadata)})
     |> ExAws.request!
@@ -33,6 +38,7 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
     :ok
   end
 
+  @spec get_event(event_id: Perhap.Event.UUIDv1) :: {:ok, Perhap.Event.t} | {:error, term}
   def get_event(event_id) do
     dynamo_object = ExAws.Dynamo.get_item("Events", %{event_id: event_id})
     |> ExAws.request!
@@ -40,16 +46,18 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
     case dynamo_object do
       %{"Item" => result} ->
         metadata = ExAws.Dynamo.decode_item(Map.get(result, "metadata"), as: Perhap.Event.Metadata)
+        metadata = %Perhap.Event.Metadata{metadata | context: String.to_atom(metadata.context), type: String.to_atom(metadata.type)}
         #data = ExAws.Dynamo.Decoder.decode(Map.get(result, "data"))
 
         event = ExAws.Dynamo.decode_item(dynamo_object, as: Perhap.Event)
 
-        %Perhap.Event{event | metadata: metadata}
+        {:ok, %Perhap.Event{event | metadata: metadata}}
       %{} ->
         {:error, "Event not found"}
     end
   end
 
+  @spec get_events(atom(), [entity_id: Perhap.Event.UUIDv4.t, after: Perhap.Event.UUIDv1.t]) :: {:ok, list(Perhap.Event.t)} | {:error, term}
   def get_events(context, opts \\ []) do
     event_ids = case Keyword.has_key?(opts, :entity_id) do
       true ->

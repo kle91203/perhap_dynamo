@@ -11,12 +11,12 @@ defmodule PerhapTest.Adapters.Dynamo do
     random_context = Enum.random([:a, :b, :c, :d, :e])
     random_event = make_random_event(
       %Perhap.Event.Metadata{context: random_context, entity_id: Perhap.Event.get_uuid_v4()} )
-    assert ExAws.Dynamo.get_item("Events", %{event_id: random_event.event_id}) |> ExAws.request! == %{}
+    assert ExAws.Dynamo.get_item("Events", %{event_id: random_event.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request! == %{}
     Dynamo.put_event(random_event)
-    refute ExAws.Dynamo.get_item("Events", %{event_id: random_event.event_id}) |> ExAws.request! == %{}
+    refute ExAws.Dynamo.get_item("Events", %{event_id: random_event.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request! == %{}
 
     #cleanup
-    ExAws.Dynamo.delete_item("Events", %{event_id: random_event.event_id}) |> ExAws.request!
+    ExAws.Dynamo.delete_item("Events", %{event_id: random_event.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request!
     ExAws.Dynamo.delete_item("Index", %{context: random_context, entity_id: random_event.metadata.entity_id}) |> ExAws.request!
   end
 
@@ -29,7 +29,7 @@ defmodule PerhapTest.Adapters.Dynamo do
     assert Dynamo.get_event(random_event.event_id) == {:ok, random_event}
 
     #cleanup
-    ExAws.Dynamo.delete_item("Events", %{event_id: random_event.event_id}) |> ExAws.request!
+    ExAws.Dynamo.delete_item("Events", %{event_id: random_event.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request!
     ExAws.Dynamo.delete_item("Index", %{context: random_context, entity_id: random_event.metadata.entity_id}) |> ExAws.request!
   end
 

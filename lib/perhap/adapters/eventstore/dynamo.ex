@@ -18,6 +18,7 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
 
   @spec put_event(event: Perhap.Event.t) :: :ok | {:error, term}
   def put_event(event) do
+    event = %Perhap.Event{event | event_id: event.event_id |> Perhap.Event.uuid_v1_to_time_order}
     ExAws.Dynamo.put_item("Events", %{Map.from_struct(event) | metadata: Map.from_struct(event.metadata)})
     |> ExAws.request!
 
@@ -40,7 +41,8 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
 
   @spec get_event(event_id: Perhap.Event.UUIDv1) :: {:ok, Perhap.Event.t} | {:error, term}
   def get_event(event_id) do
-    dynamo_object = ExAws.Dynamo.get_item("Events", %{event_id: event_id})
+    event_id_time_order = event_id |> Perhap.Event.uuid_v1_to_time_order
+    dynamo_object = ExAws.Dynamo.get_item("Events", %{event_id: event_id_time_order})
     |> ExAws.request!
 
     case dynamo_object do
@@ -51,7 +53,7 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
 
         event = ExAws.Dynamo.decode_item(dynamo_object, as: Perhap.Event)
 
-        {:ok, %Perhap.Event{event | metadata: metadata}}
+        {:ok, %Perhap.Event{event | event_id: metadata.event_id, metadata: metadata}}
       %{} ->
         {:error, "Event not found"}
     end
@@ -66,9 +68,10 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
 
         case dynamo_object do
           %{"Item" => data} ->
-            Map.get(data, "event_id", [])
+            ExAws.Dynamo.Decoder.decode(data)
+            |> Map.get("events", [])
           %{} ->
-            {:error, "Event not Found"}
+            []
         end
       _ ->
         dynamo_object = ExAws.Dynamo.query("Index",
@@ -82,22 +85,28 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
 
     end
 
-    event_ids2 = case Keyword.has_key?(opts, :after) do
-      true ->
-        after_event = time_order(opts[:after])
-        event_ids |> Enum.filter(fn {ev} -> ev > after_event end)
-      _ -> event_ids
-    end
+    if event_ids == [] do
+      {:ok, []}
+    else
+      event_ids2 = case Keyword.has_key?(opts, :after) do
+        true ->
+          after_event = time_order(opts[:after])
+          event_ids |> Enum.filter(fn ev -> ev > after_event end)
+        _ -> event_ids
+      end
 
-    event_ids3 = for event_id <- event_ids2, do: [event_id: event_id]
-    #possible this can only do 100 at a time, run through a loop if more
-    events = ExAws.Dynamo.batch_get_item(%{"Events" => [keys: event_ids3]})
-             |> ExAws.request!
-             |> Map.get("Responses")
-             |> Map.get("Events")
-             |> Enum.map(fn event -> {event, ExAws.Dynamo.decode_item(event["metadata"], as: Perhap.Event.Metadata)} end)
-             |> Enum.map(fn {event, metadata} -> %Perhap.Event{ExAws.Dynamo.decode_item(event, as: Perhap.Event) | metadata: metadata} end)
-    {:ok, events}
+      event_ids3 = for event_id <- event_ids2, do: [event_id: event_id]
+
+      #possible this can only do 100 at a time, run through a loop if more
+      events = ExAws.Dynamo.batch_get_item(%{"Events" => [keys: event_ids3]})
+               |> ExAws.request!
+               |> Map.get("Responses")
+               |> Map.get("Events")
+               |> Enum.map(fn event -> {event, ExAws.Dynamo.decode_item(event["metadata"], as: Perhap.Event.Metadata)} end)
+               |> Enum.map(fn {event, metadata} ->
+                 %Perhap.Event{ExAws.Dynamo.decode_item(event, as: Perhap.Event) | event_id: metadata.event_id, metadata: %Perhap.Event.Metadata{metadata | context: String.to_atom(metadata.context), type: String.to_atom(metadata.type)}} end)
+      {:ok, events}
+    end
   end
 
   defp time_order(maybe_uuidv1) do

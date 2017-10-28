@@ -19,10 +19,10 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
   @spec put_event(event: Perhap.Event.t) :: :ok | {:error, term}
   def put_event(event) do
     event = %Perhap.Event{event | event_id: event.event_id |> Perhap.Event.uuid_v1_to_time_order}
-    ExAws.Dynamo.put_item("Events", %{Map.from_struct(event) | metadata: Map.from_struct(event.metadata)})
+    ExAws.Dynamo.put_item(Application.get_env(:perhap_dynamo, :event_table_name, "Events"), %{Map.from_struct(event) | metadata: Map.from_struct(event.metadata)})
     |> ExAws.request!
 
-    dynamo_object = ExAws.Dynamo.get_item("Index", %{context: event.metadata.context, entity_id: event.metadata.entity_id})
+    dynamo_object = ExAws.Dynamo.get_item(Application.get_env(:perhap_dynamo, :event_index_table_name, "Index"), %{context: event.metadata.context, entity_id: event.metadata.entity_id})
     |> ExAws.request!
 
     indexed_events = case dynamo_object do
@@ -33,7 +33,7 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
     end
     #IO.inspect indexed_events
 
-    ExAws.Dynamo.put_item("Index", %{context: event.metadata.context, entity_id: event.metadata.entity_id, events: [event.event_id | indexed_events]})
+    ExAws.Dynamo.put_item(Application.get_env(:perhap_dynamo, :event_index_table_name, "Index"), %{context: event.metadata.context, entity_id: event.metadata.entity_id, events: [event.event_id | indexed_events]})
     |> ExAws.request!
 
     :ok
@@ -42,7 +42,7 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
   @spec get_event(event_id: Perhap.Event.UUIDv1) :: {:ok, Perhap.Event.t} | {:error, term}
   def get_event(event_id) do
     event_id_time_order = event_id |> Perhap.Event.uuid_v1_to_time_order
-    dynamo_object = ExAws.Dynamo.get_item("Events", %{event_id: event_id_time_order})
+    dynamo_object = ExAws.Dynamo.get_item(Application.get_env(:perhap_dynamo, :event_table_name, "Events"), %{event_id: event_id_time_order})
     |> ExAws.request!
 
     case dynamo_object do
@@ -63,7 +63,7 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
   def get_events(context, opts \\ []) do
     event_ids = case Keyword.has_key?(opts, :entity_id) do
       true ->
-        dynamo_object = ExAws.Dynamo.get_item("Index", %{context: context, entity_id: opts[:entity_id]})
+        dynamo_object = ExAws.Dynamo.get_item(Application.get_env(:perhap_dynamo, :event_index_table_name, "Index"), %{context: context, entity_id: opts[:entity_id]})
         |> ExAws.request!
 
         case dynamo_object do
@@ -74,7 +74,7 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
             []
         end
       _ ->
-        dynamo_object = ExAws.Dynamo.query("Index",
+        dynamo_object = ExAws.Dynamo.query(Application.get_env(:perhap_dynamo, :event_index_table_name, "Index"),
                                            expression_attribute_values: [context: context],
                                            key_condition_expression: "context = :context")
                         |> ExAws.request!
@@ -98,7 +98,7 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
       event_ids3 = for event_id <- event_ids2, do: [event_id: event_id]
 
       #possible this can only do 100 at a time, run through a loop if more
-      events = ExAws.Dynamo.batch_get_item(%{"Events" => [keys: event_ids3]})
+      events = ExAws.Dynamo.batch_get_item(%{Application.get_env(:perhap_dynamo, :event_table_name, "Events") => [keys: event_ids3]})
                |> ExAws.request!
                |> Map.get("Responses")
                |> Map.get("Events")

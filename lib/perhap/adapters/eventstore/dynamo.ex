@@ -31,7 +31,6 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
       %{} ->
         []
     end
-    #IO.inspect indexed_events
 
     ExAws.Dynamo.put_item(Application.get_env(:perhap_dynamo, :event_index_table_name, "Index"), %{context: event.metadata.context, entity_id: event.metadata.entity_id, events: [event.event_id | indexed_events]})
     |> ExAws.request!
@@ -49,7 +48,6 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
       %{"Item" => result} ->
         metadata = ExAws.Dynamo.decode_item(Map.get(result, "metadata"), as: Perhap.Event.Metadata)
         metadata = %Perhap.Event.Metadata{metadata | context: String.to_atom(metadata.context), type: String.to_atom(metadata.type)}
-        #data = ExAws.Dynamo.Decoder.decode(Map.get(result, "data"))
 
         event = ExAws.Dynamo.decode_item(dynamo_object, as: Perhap.Event)
 
@@ -97,16 +95,28 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
 
       event_ids3 = for event_id <- event_ids2, do: [event_id: event_id]
 
-      #possible this can only do 100 at a time, run through a loop if more
-      events = ExAws.Dynamo.batch_get_item(%{Application.get_env(:perhap_dynamo, :event_table_name, "Events") => [keys: event_ids3]})
-               |> ExAws.request!
-               |> Map.get("Responses")
-               |> Map.get("Events")
-               |> Enum.map(fn event -> {event, ExAws.Dynamo.decode_item(event["metadata"], as: Perhap.Event.Metadata)} end)
-               |> Enum.map(fn {event, metadata} ->
-                 %Perhap.Event{ExAws.Dynamo.decode_item(event, as: Perhap.Event) | event_id: metadata.event_id, metadata: %Perhap.Event.Metadata{metadata | context: String.to_atom(metadata.context), type: String.to_atom(metadata.type)}} end)
+      events = Enum.chunk_every(event_ids3, 100) |> batch_get([])
+
       {:ok, events}
     end
+  end
+
+  defp batch_get([], events) do
+    events
+  end
+
+  defp batch_get([chunk | rest], event_accumulator) do
+    events = ExAws.Dynamo.batch_get_item(%{Application.get_env(:perhap_dynamo, :event_table_name, "Events") => [keys: chunk]})
+             |> ExAws.request!
+             |> Map.get("Responses")
+             |> Map.get("Events")
+             |> Enum.map(fn event -> {event, ExAws.Dynamo.decode_item(event["metadata"], as: Perhap.Event.Metadata)} end)
+             |> Enum.map(fn {event, metadata} ->
+               %Perhap.Event{ExAws.Dynamo.decode_item(event, as: Perhap.Event) | event_id: metadata.event_id,
+                                                                                 metadata: %Perhap.Event.Metadata{metadata | context: String.to_atom(metadata.context),
+                                                                                                                             type: String.to_atom(metadata.type)}} end)
+
+    batch_get(rest, event_accumulator ++ events)
   end
 
   defp time_order(maybe_uuidv1) do

@@ -13,10 +13,36 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
 
   @spec start_link(opts: any()) ::   {:ok, pid} | :ignore | {:error, {:already_started, pid} | term}
   def start_link(args) do
-    {:ok, pid} = GenServer.start_link(__MODULE__, args)
+    GenServer.start_link(__MODULE__, [], name: :eventstore)
+  end
+
+  def init(args) do
+    interval = 1 #miliseconds
+    Process.send_after(self(), {:batch_write, interval}, interval)
+    {:ok, []}
   end
 
   @spec put_event(event: Perhap.Event.t) :: :ok | {:error, term}
+  def put_event(event) do
+    GenServer.call(:eventstore, {:put_event, event})
+  end
+
+  def handle_call({:put_event, event}, _from, events) do
+    {:reply, :ok, [event | events]}
+  end
+
+  def handle_info({:batch_write, interval}, []) do
+    Process.send_after(self(), {:batch_write, interval}, interval)
+    {:noreply, []}
+  end
+
+  def handle_info({:batch_write, interval}, events) do
+    Task.start(__MODULE__, :put_to_dynamo, [Enum.reverse(events)])
+    Process.send_after(self(), {:batch_write, interval}, interval)
+    {:noreply, []}
+  end
+
+  @doc """
   def put_event(event) do
     event = %Perhap.Event{event | event_id: event.event_id |> Perhap.Event.uuid_v1_to_time_order}
     ExAws.Dynamo.put_item(Application.get_env(:perhap_dynamo, :event_table_name, "Events"), %{Map.from_struct(event) | metadata: Map.from_struct(event.metadata)})
@@ -37,6 +63,8 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
 
     :ok
   end
+  """
+
 
   @spec get_event(event_id: Perhap.Event.UUIDv1) :: {:ok, Perhap.Event.t} | {:error, term}
   def get_event(event_id) do
@@ -130,4 +158,64 @@ defmodule Perhap.Adapters.Eventstore.Dynamo do
     Enum.reduce(data, %{}, fn({key, value}, map) ->
       Map.put(map, String.to_atom(key), value) end)
   end
+
+  def put_to_dynamo(events) do
+    events = events |> Enum.map(fn event -> %Perhap.Event{event | event_id: event.event_id |> Perhap.Event.uuid_v1_to_time_order, metadata: Map.from_struct(event.metadata)} |> Map.from_struct end)
+
+    Enum.chunk_every(events, 25) |> batch_put()
+  end
+
+  defp batch_put([]) do
+    :ok
+  end
+
+  defp batch_put([chunk | rest]) do
+    index_keys = chunk
+              |> Enum.map(fn event -> %{context: event.metadata.context, entity_id: event.metadata.entity_id} end)
+              |> Enum.dedup
+
+    index = ExAws.Dynamo.batch_get_item(%{Application.get_env(:perhap_dynamo, :event_index_table_name, "Index") => [keys: index_keys]})
+              |> ExAws.request!
+              |> Map.get("Responses")
+              |> Map.get("Index")
+              |> Enum.map(fn index_item -> ExAws.Dynamo.Decoder.decode(index_item) end)
+              |> Enum.map(fn index_item -> %{index_item | "context" => String.to_atom(index_item["context"])} end)
+              |> Enum.reduce(%{}, fn (index, map) -> Map.put(map, {index["context"], index["entity_id"]},  index["events"]) end)
+              #unprocessed keys
+
+    index_put_request = process_index(chunk, index)
+
+    event_put_request = chunk |> Enum.map(fn event -> [put_request: [item: event]] end)
+
+    case ExAws.Dynamo.batch_write_item(%{Application.get_env(:perhap_dynamo, :event_table_name, "Events") => event_put_request}) |> ExAws.request do
+      {:error, reason} ->
+        IO.puts "Error writing events to dynamo, reason: #{inspect reason}"
+        IO.inspect chunk
+      _ ->
+        case ExAws.Dynamo.batch_write_item(%{Application.get_env(:perhap_dynamo, :event_index_table_name, "Index") => index_put_request}) |> ExAws.request do
+          {:error, reason} ->
+            IO.puts "Error writing index to dynamo, reason: #{inspect reason}"
+            IO.inspect {:events, chunk}
+            IO.inspect {:index, index_put_request}
+
+            Enum.each(chunk, fn event -> ExAws.Dynamo.delete_item(Application.get_env(:perhap_dynamo, :event_table_name, "Events"), %{event_id: event.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request! end)
+          _ ->
+            :ok
+        end
+    end
+    batch_put(rest)
+  end
+
+  defp process_index([], index) do
+    index
+    |> Map.keys
+    |> Enum.map(fn {context, entity_id} -> [put_request: [item: %{context: context, entity_id: entity_id, events: Map.get(index, {context, entity_id})}]] end)
+  end
+
+  defp process_index([event | rest], index) do
+    index_key = {event.metadata.context, event.metadata.entity_id}
+    indexed_events = [event.event_id | Map.get(index, index_key, [])]
+    process_index(rest, Map.put(index, index_key, indexed_events))
+  end
+
 end

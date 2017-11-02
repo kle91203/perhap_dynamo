@@ -1,6 +1,14 @@
 defmodule Perhap.EventTestDynamo do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
   import PerhapTest.Helper, only: :functions
+
+  @interval 1
+  @pause_interval 500
+
+  setup do
+    Perhap.Adapters.Eventstore.Dynamo.start_link([])
+    :ok
+  end
 
   test "timestamp returns system time in microseconds" do
     assert_in_delta(Perhap.Event.timestamp(), :erlang.system_time(:microsecond), 10)
@@ -66,11 +74,16 @@ defmodule Perhap.EventTestDynamo do
 
   test "saves and retrieves an event" do
     random_event = PerhapTest.Helper.make_random_event()
-    assert Perhap.Event.save_event(random_event) == {:ok, random_event}
+
+    response = Perhap.Event.save_event(random_event)
+    :timer.sleep(@pause_interval)
 
     #cleanup
     ExAws.Dynamo.delete_item("Events", %{event_id: random_event.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request!
     ExAws.Dynamo.delete_item("Index", %{context: random_event.metadata.context, entity_id: random_event.metadata.entity_id}) |> ExAws.request!
+    #/cleanup
+
+    assert response == {:ok, random_event}
   end
 
   test "doesn't retrieve an event that doesn't exist" do
@@ -82,12 +95,15 @@ defmodule Perhap.EventTestDynamo do
     random_event = make_random_event(
       %Perhap.Event.Metadata{context: random_context} )
     Perhap.Event.save_event(random_event)
-    {:ok, result} = Perhap.Event.retrieve_event(random_event.event_id)
-    assert result.event_id == random_event.event_id
+    :timer.sleep(@pause_interval)
+    result = Perhap.Event.retrieve_event(random_event.event_id)
 
     #cleanup
     ExAws.Dynamo.delete_item("Events", %{event_id: random_event.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request!
     ExAws.Dynamo.delete_item("Index", %{context: random_event.metadata.context, entity_id: random_event.metadata.entity_id}) |> ExAws.request!
+    #/cleanup
+
+    assert result == {:ok, random_event}
   end
 
   test "retrieves events by context and entity ID" do
@@ -99,14 +115,18 @@ defmodule Perhap.EventTestDynamo do
     rando2 = make_random_event(
       %Perhap.Event.Metadata{context: random_context, entity_id: random_entity_id} )
     Perhap.Event.save_event(rando2)
-    {:ok, results} = Perhap.Event.retrieve_events(random_context, entity_id: random_entity_id)
-    assert Enum.member?(results, rando1)
-    assert Enum.member?(results, rando2)
+    :timer.sleep(@pause_interval)
+    results = Perhap.Event.retrieve_events(random_context, entity_id: random_entity_id)
 
     #cleanup
     ExAws.Dynamo.delete_item("Events", %{event_id: rando1.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request!
     ExAws.Dynamo.delete_item("Events", %{event_id: rando2.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request!
     ExAws.Dynamo.delete_item("Index", %{context: random_context, entity_id: random_entity_id}) |> ExAws.request!
+    #/cleanup
+
+    {:ok, events} = results
+    assert Enum.member?(events, rando1)
+    assert Enum.member?(events, rando2)
   end
 
 
@@ -116,17 +136,22 @@ defmodule Perhap.EventTestDynamo do
     rando1 = make_random_event(
       %Perhap.Event.Metadata{context: random_context, entity_id: random_entity_id} )
     Perhap.Event.save_event(rando1)
+    :timer.sleep(@pause_interval)
     rando2 = make_random_event(
       %Perhap.Event.Metadata{context: random_context, entity_id: random_entity_id} )
     Perhap.Event.save_event(rando2)
-    {:ok, results} = Perhap.Event.retrieve_events(random_context)
-    assert Enum.member?(results, rando1)
-    assert Enum.member?(results, rando2)
+    :timer.sleep(@pause_interval)
+    results = Perhap.Event.retrieve_events(random_context)
 
     #cleanup
     ExAws.Dynamo.delete_item("Events", %{event_id: rando1.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request!
     ExAws.Dynamo.delete_item("Events", %{event_id: rando2.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request!
     ExAws.Dynamo.delete_item("Index", %{context: random_context, entity_id: random_entity_id}) |> ExAws.request!
+    #/cleanup
+
+    {:ok, events} = results
+    assert Enum.member?(events, rando1)
+    assert Enum.member?(events, rando2)
   end
 
   test "returns an empty list if events don't exist" do
@@ -135,15 +160,21 @@ defmodule Perhap.EventTestDynamo do
     rando = make_random_event(
       %Perhap.Event.Metadata{context: :z, entity_id: random_entity_id} )
     Perhap.Event.save_event(rando)
-    assert Perhap.Event.retrieve_events(:z, entity_id: Perhap.Event.get_uuid_v4) == {:ok, []}
-    {:ok, [result1]} = Perhap.Event.retrieve_events(:z)
-    assert result1.event_id == rando.event_id
-    {:ok, [result2]} = Perhap.Event.retrieve_events(:z, entity_id: random_entity_id)
-    assert result2.event_id == rando.event_id
+    :timer.sleep(@pause_interval)
+    check1 = Perhap.Event.retrieve_events(:z, entity_id: Perhap.Event.get_uuid_v4)
+    result1 = Perhap.Event.retrieve_events(:z)
+    result2 = Perhap.Event.retrieve_events(:z, entity_id: random_entity_id)
 
     #cleanup
     ExAws.Dynamo.delete_item("Events", %{event_id: rando.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request!
     ExAws.Dynamo.delete_item("Index", %{context: rando.metadata.context, entity_id: random_entity_id}) |> ExAws.request!
+    #/cleanup
+    {:ok, [event1]} = result1
+    {:ok, [event2]} = result2
+
+    assert check1 == {:ok, []}
+    assert event1.event_id == rando.event_id
+    assert event2.event_id == rando.event_id
 
   end
 
@@ -157,17 +188,18 @@ defmodule Perhap.EventTestDynamo do
                       make_random_event(%Perhap.Event.Metadata{context: :aa, event_id: ev, entity_id: random_entity})
                     end)
     random_events |> Enum.each(fn(event) -> Perhap.Event.save_event(event) end)
+    :timer.sleep(@pause_interval)
     [ ev1 | [ ev2 | rest ] ] = random_events |> Enum.reverse
-    {:ok, results} = Perhap.Event.retrieve_events(:aa, entity_id: random_entity, after: ev2.event_id)
+    results = Perhap.Event.retrieve_events(:aa, entity_id: random_entity, after: ev2.event_id)
 
     #cleanup
     Enum.map(random_events, fn event -> ExAws.Dynamo.delete_item("Events", %{event_id: event.event_id |> Perhap.Event.uuid_v1_to_time_order}) |> ExAws.request! end)
     ExAws.Dynamo.delete_item("Index", %{context: :aa, entity_id: random_entity}) |> ExAws.request!
     #/cleanup
-    #IO.inspect random_events
-    #IO.inspect results
-    assert Enum.member?(results, ev1)
-    Enum.map(rest, fn event -> refute Enum.member?(results, event) end)
+
+    {:ok, events} = results
+    assert Enum.member?(events, ev1)
+    Enum.map(rest, fn event -> refute Enum.member?(events, event) end)
 
 
 

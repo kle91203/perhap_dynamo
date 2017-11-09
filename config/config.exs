@@ -57,3 +57,10 @@ config :libcluster,
   ]
 
 config :swarm, sync_nodes_timeout: 1_000 #,debug: true
+
+config :perhap_dynamo,
+  event_table_name: "Events",
+  event_index_table_name: "Index"
+
+config :ex_aws,
+  region: "us-east-2"

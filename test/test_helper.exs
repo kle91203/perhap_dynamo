@@ -51,6 +51,7 @@ defmodule PerhapTest.Helper do
   def make_random_event(), do: make_random_event(%Perhap.Event.Metadata{})
   def make_random_event(%Perhap.Event.Metadata{} = metadata) do
     event_id = metadata.event_id || Perhap.Event.get_uuid_v1()
+    #the context is :test
     context = metadata.context || :test
     %Perhap.Event{
       event_id: event_id,
